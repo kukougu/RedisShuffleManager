@@ -4,17 +4,19 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleHandle, ShuffleWriter}
 import org.apache.spark.{SparkEnv, TaskContext}
-import redis.clients.jedis.{Jedis, JedisPool}
+import _root_.redis.clients.jedis.{Jedis, JedisPool}
 
-class RedisShuffleWriter[K, V](
+private[spark] class RedisShuffleWriter[K, V](
   handle: ShuffleHandle,
-  mapId: Int,
+  mapId: Long,
   context: TaskContext)
   extends ShuffleWriter[K, V] with Logging {
 
   private val dep = handle.asInstanceOf[RedisShuffleHandle[Any, Any, Any]].dependency
 
   private val blockManager = SparkEnv.get.blockManager
+
+
 
   private val jedisPool = new JedisPool()
 
@@ -26,6 +28,8 @@ class RedisShuffleWriter[K, V](
   private var stopping = false
 
   private var mapStatus: MapStatus = null
+
+  private var partitionLengths: Array[Long] = _
 
   /** Write a bunch of records to this task's output */
   override def write(records: Iterator[Product2[K, V]]): Unit = {
@@ -47,8 +51,8 @@ class RedisShuffleWriter[K, V](
           Some(dep.partitioner), None, dep.serializer)
       }
 
-      val partitionLengths = sorter.insertAll(records)
-      mapStatus = MapStatus(blockManager.shuffleServerId, partitionLengths)
+      partitionLengths = sorter.insertAll(records)
+      mapStatus = MapStatus(blockManager.shuffleServerId, partitionLengths, mapId)
 
     } finally {
       if (output != null) {
@@ -78,4 +82,6 @@ class RedisShuffleWriter[K, V](
       jedisPool.close()
     }
   }
+
+  override def getPartitionLengths(): Array[Long] = partitionLengths
 }

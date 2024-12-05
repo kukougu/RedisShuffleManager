@@ -3,48 +3,58 @@ package org.apache.spark.shuffle.redis
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import scala.collection.JavaConverters._
 
-import org.apache.spark.{ShuffleDependency, SparkConf, TaskContext}
+import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle._
-import _root_.redis.clients.jedis.Jedis
+import org.apache.spark.shuffle.api.ShuffleExecutorComponents
+import org.apache.spark.util.collection.OpenHashSet
 import org.apache.spark.serializer.SerializerInstance
 
-import scala.collection.JavaConverters._
+import _root_.redis.clients.jedis.Jedis
 import scala.reflect.ClassTag
 
 /**
   * A shuffler manager that support using local Redis store instead of Spark's BlockStore.
   */
-class RedisShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
+private[spark] class RedisShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
 
 
   /**
     * A mapping from shuffle ids to the number of mappers producing output for those shuffles.
     */
-  private[this] val numMapsForShuffle = new ConcurrentHashMap[Int, ConcurrentHashMap[Int, Int]]()
+  private[this] val numMapsForShuffle = new ConcurrentHashMap[Int, ConcurrentHashMap[Long, Int]]()
 
   override def registerShuffle[K, V, C](
-      shuffleId: Int, numMaps: Int, dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
-    new RedisShuffleHandle(shuffleId, numMaps, dependency)
+      shuffleId: Int,
+      dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
+    new RedisShuffleHandle(shuffleId, dependency)
   }
 
-  override def getWriter[K, V](handle: ShuffleHandle, mapId: Int,
-                               context: TaskContext): ShuffleWriter[K, V] = {
+  override def getWriter[K, V](handle: ShuffleHandle,
+                               mapId: Long,
+                               context: TaskContext,
+                               metrics: ShuffleWriteMetricsReporter): ShuffleWriter[K, V] = {
 
     val numPartition =
       handle.asInstanceOf[RedisShuffleHandle[K, V, _]].dependency.partitioner.numPartitions
-    val newMap = new ConcurrentHashMap[Int, Int]()
+    val newMap = new ConcurrentHashMap[Long, Int]()
     val map = numMapsForShuffle.putIfAbsent(handle.shuffleId, newMap)
     if (map == null) newMap.put(mapId, numPartition)
     else map.put(mapId, numPartition)
     new RedisShuffleWriter(handle, mapId, context)
   }
 
-  override def getReader[K, C](handle: ShuffleHandle, startPartition: Int, endPartition: Int,
-                               context: TaskContext): ShuffleReader[K, C] = {
+  override def getReader[K, C](handle: ShuffleHandle,
+                               startMapIndex: Int,
+                               endMapIndex: Int,
+                               startPartition: Int,
+                               endPartition: Int,
+                               context: TaskContext,
+                               metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
     new RedisShuffleReader[K, C](
-      handle.asInstanceOf[RedisShuffleHandle[K, _, C]], startPartition, endPartition, context)
+      handle.asInstanceOf[RedisShuffleHandle[K, _, C]], startMapIndex, endMapIndex, startPartition, endPartition, context, metrics)
   }
 
   override def unregisterShuffle(shuffleId: Int): Boolean = {
@@ -73,15 +83,15 @@ class RedisShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   }
 }
 
-object RedisShuffleManager {
+private[spark] object RedisShuffleManager extends Logging {
 
-  def mapKeyPrefix(shuffleId: Int, mapId: Int) =
+  def mapKeyPrefix(shuffleId: Int, mapId: Long) =
     s"SHUFFLE_${shuffleId}_${mapId}_"
 
-  def mapKey(shuffleId: Int, mapId: Int, partition: Int) =
+  def mapKey(shuffleId: Int, mapId: Long, partition: Int) =
     s"SHUFFLE_${shuffleId}_${mapId}_${partition}".getBytes()
 
-  def mapKeyIter(shuffleId: Int, mapId: Int, numPartitions: Int): Iterator[Array[Byte]] = {
+  def mapKeyIter(shuffleId: Int, mapId: Long, numPartitions: Int): Iterator[Array[Byte]] = {
     (0 until numPartitions).toIterator.map { partition =>
       mapKey(shuffleId, mapId, partition)
     }

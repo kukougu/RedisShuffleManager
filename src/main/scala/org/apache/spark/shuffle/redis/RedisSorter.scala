@@ -6,7 +6,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.util.collection.{PartitionedAppendOnlyMap, Spillable, WritablePartitionedPairCollection}
 import org.apache.spark.{Aggregator, Partitioner, SparkEnv, TaskContext}
-import redis.clients.jedis.{Jedis, Pipeline}
+import _root_.redis.clients.jedis.{Jedis, Pipeline}
 
 import scala.reflect.ClassTag
 
@@ -17,7 +17,7 @@ import scala.reflect.ClassTag
 class RedisSorter[K: ClassTag, V: ClassTag, C: ClassTag](
   jedis: Jedis,
   shuffleId: Int,
-  mapId: Int,
+  mapId: Long,
   context: TaskContext,
   aggregator: Option[Aggregator[K, V, C]] = None,
   partitioner: Option[Partitioner] = None,
